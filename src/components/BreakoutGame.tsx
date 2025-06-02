@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Play, Pause, RotateCcw, Trophy, Heart, Zap } from 'lucide-react';
+import { useIsMobile } from '@/hooks/use-mobile';
 
 interface Paddle {
   x: number;
@@ -43,6 +44,18 @@ interface PowerUp {
   id: number;
 }
 
+interface Particle {
+  x: number;
+  y: number;
+  dx: number;
+  dy: number;
+  size: number;
+  color: string;
+  life: number;
+  maxLife: number;
+  id: number;
+}
+
 const CANVAS_WIDTH = 800;
 const CANVAS_HEIGHT = 600;
 const PADDLE_WIDTH = 100;
@@ -74,6 +87,8 @@ const BreakoutGame = () => {
   const animationFrameRef = useRef<number>();
   const ballIdCounter = useRef(1);
   const powerUpIdCounter = useRef(1);
+  const particleIdCounter = useRef(1);
+  const isMobile = useIsMobile();
 
   const [paddle, setPaddle] = useState<Paddle>({
     x: CANVAS_WIDTH / 2 - PADDLE_WIDTH / 2,
@@ -93,7 +108,10 @@ const BreakoutGame = () => {
 
   const [bricks, setBricks] = useState<Brick[]>([]);
   const [powerUps, setPowerUps] = useState<PowerUp[]>([]);
+  const [particles, setParticles] = useState<Particle[]>([]);
   const [keys, setKeys] = useState<{ [key: string]: boolean }>({});
+  const [touchStart, setTouchStart] = useState<{ x: number; y: number } | null>(null);
+  const lastTapRef = useRef<number>(0);
 
   const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3', '#a8e6cf', '#ffd93d'];
 
@@ -178,8 +196,10 @@ const BreakoutGame = () => {
       }]);
       
       setPowerUps([]);
+      setParticles([]);
       ballIdCounter.current = 1;
       powerUpIdCounter.current = 1;
+      particleIdCounter.current = 1;
       initializeBricks();
       setGameState('playing');
     } else {
@@ -206,11 +226,13 @@ const BreakoutGame = () => {
     }]);
     
     setPowerUps([]);
+    setParticles([]);
     setScore(0);
     setLives(3);
     setLevel(1);
     ballIdCounter.current = 1;
     powerUpIdCounter.current = 1;
+    particleIdCounter.current = 1;
     initializeBricks();
     setGameState('playing');
   }, [initializeBricks]);
@@ -233,6 +255,32 @@ const BreakoutGame = () => {
       id: powerUpIdCounter.current++
     };
     setPowerUps(prev => [...prev, newPowerUp]);
+  };
+
+  const createParticles = (x: number, y: number, color: string) => {
+    const newParticles: Particle[] = [];
+    const particleCount = 8 + Math.random() * 4; // 8-12 particles
+    
+    for (let i = 0; i < particleCount; i++) {
+      const angle = (Math.PI * 2 * i) / particleCount + (Math.random() - 0.5) * 0.5;
+      const speed = 2 + Math.random() * 3;
+      const size = 2 + Math.random() * 3;
+      const life = 30 + Math.random() * 20;
+      
+      newParticles.push({
+        x: x + BRICK_WIDTH / 2,
+        y: y + BRICK_HEIGHT / 2,
+        dx: Math.cos(angle) * speed,
+        dy: Math.sin(angle) * speed,
+        size,
+        color,
+        life,
+        maxLife: life,
+        id: particleIdCounter.current++
+      });
+    }
+    
+    setParticles(prev => [...prev, ...newParticles]);
   };
 
   const activatePowerUp = (type: 'multiBall' | 'extraLife') => {
@@ -359,6 +407,9 @@ const BreakoutGame = () => {
             );
             setScore(prev => prev + (10 * level)); // More points for higher levels
             
+            // Create particle effect
+            createParticles(brick.x, brick.y, brick.color);
+            
             // Spawn power-up if brick has one
             if (brick.hasPowerUp && brick.powerUpType) {
               spawnPowerUp(brick.x, brick.y, brick.powerUpType);
@@ -391,6 +442,18 @@ const BreakoutGame = () => {
         // Update position
         powerUp.y = newPowerUp.y;
         return true;
+      });
+    });
+
+    // Update particles
+    setParticles(prevParticles => {
+      return prevParticles.filter(particle => {
+        particle.x += particle.dx;
+        particle.y += particle.dy;
+        particle.dy += 0.1; // Gravity
+        particle.life--;
+        
+        return particle.life > 0;
       });
     });
 
@@ -466,6 +529,18 @@ const BreakoutGame = () => {
         ctx.fillText(symbol, powerUp.x + powerUp.width/2, powerUp.y + powerUp.height/2 + 4);
       });
 
+      // Draw particles
+      particles.forEach(particle => {
+        const alpha = particle.life / particle.maxLife;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = particle.color;
+        ctx.beginPath();
+        ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.closePath();
+      });
+      ctx.globalAlpha = 1; // Reset alpha
+
       // Draw UI with level info
       ctx.fillStyle = '#ffffff';
       ctx.font = '20px Arial';
@@ -485,7 +560,7 @@ const BreakoutGame = () => {
       ctx.fillText('PAUSED', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
       ctx.textAlign = 'left';
     }
-  }, [gameState, paddle, balls, bricks, powerUps, score, lives, level]);
+  }, [gameState, paddle, balls, bricks, powerUps, particles, score, lives, level]);
 
   const gameLoop = useCallback(() => {
     updateGame();
@@ -524,14 +599,71 @@ const BreakoutGame = () => {
       setKeys(prev => ({ ...prev, [e.code]: false }));
     };
 
+    const handleTouchStart = (e: TouchEvent) => {
+      e.preventDefault();
+      const touch = e.touches[0];
+      setTouchStart({ x: touch.clientX, y: touch.clientY });
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      e.preventDefault();
+      if (!touchStart || gameState !== 'playing') return;
+      
+      const touch = e.touches[0];
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      
+      const rect = canvas.getBoundingClientRect();
+      const canvasX = touch.clientX - rect.left;
+      const scaledX = (canvasX / rect.width) * CANVAS_WIDTH;
+      
+      setPaddle(prev => ({
+        ...prev,
+        x: Math.max(0, Math.min(CANVAS_WIDTH - prev.width, scaledX - prev.width / 2))
+      }));
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      e.preventDefault();
+      setTouchStart(null);
+      
+      // Double tap to pause/resume
+      if (e.timeStamp - lastTapRef.current < 300) {
+        if (gameState === 'playing') {
+          setGameState('paused');
+        } else if (gameState === 'paused') {
+          setGameState('playing');
+        }
+      }
+      lastTapRef.current = e.timeStamp;
+    };
+
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    
+    if (isMobile) {
+      const canvas = canvasRef.current;
+      if (canvas) {
+        canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+        canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+        canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
+      }
+    }
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      
+      if (isMobile) {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          canvas.removeEventListener('touchstart', handleTouchStart);
+          canvas.removeEventListener('touchmove', handleTouchMove);
+          canvas.removeEventListener('touchend', handleTouchEnd);
+        }
+      }
     };
-  }, [gameState]);
+  }, [gameState, touchStart, isMobile]);
 
   useEffect(() => {
     initializeBricks();
@@ -746,14 +878,29 @@ const BreakoutGame = () => {
             {/* Instructions */}
             <div className="text-center space-y-2 max-w-2xl">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                <div className="flex items-center justify-center space-x-2 text-muted-foreground">
-                  <kbd className="px-2 py-1 bg-white/10 rounded text-xs">←→</kbd>
-                  <span>Move paddle</span>
-                </div>
-                <div className="flex items-center justify-center space-x-2 text-muted-foreground">
-                  <kbd className="px-2 py-1 bg-white/10 rounded text-xs">Space</kbd>
-                  <span>Pause/Resume</span>
-                </div>
+                {!isMobile ? (
+                  <>
+                    <div className="flex items-center justify-center space-x-2 text-muted-foreground">
+                      <kbd className="px-2 py-1 bg-white/10 rounded text-xs">←→</kbd>
+                      <span>Move paddle</span>
+                    </div>
+                    <div className="flex items-center justify-center space-x-2 text-muted-foreground">
+                      <kbd className="px-2 py-1 bg-white/10 rounded text-xs">Space</kbd>
+                      <span>Pause/Resume</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-center space-x-2 text-muted-foreground">
+                      <kbd className="px-2 py-1 bg-white/10 rounded text-xs">👆</kbd>
+                      <span>Touch & drag to move paddle</span>
+                    </div>
+                    <div className="flex items-center justify-center space-x-2 text-muted-foreground">
+                      <kbd className="px-2 py-1 bg-white/10 rounded text-xs">👆👆</kbd>
+                      <span>Double tap to pause</span>
+                    </div>
+                  </>
+                )}
               </div>
               
               <div className="flex flex-wrap justify-center gap-4 pt-4">
